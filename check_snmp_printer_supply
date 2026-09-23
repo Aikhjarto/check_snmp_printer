@@ -1,0 +1,112 @@
+#!/bin/bash
+
+# string for help text
+usage()
+{
+cat << EOF
+usage:
+This script reads the status of supplies of a laser printer via snmp, i.e. the toner fill level and the wear level of the image drum.
+OPTIONS:
+ -h	Show this message
+ -w	warning level of supply status as integer number 0-100 (default 3)
+ -c 	critical value of supply status as integer number 0-100 (default 0, empty)
+ -H	hostname or address of the printer (required)
+ -t	tray index (default 1)
+ -d	snmp domain (default "public")
+ -p	snmp protocol (default 1)
+ -v	verbose
+EOF
+}
+
+# nagios expects one of these as return values
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+STATE_DEPENDENT=4
+
+
+# set default values
+HOSTNAME=""
+DOM="public"
+SNMP_VERSION=1
+SUPP_IDX=1
+CRIT_PERCENT=0 # in percent of max level
+WARN_PERCENT=3 # in percent of max level
+VERBOSE=0
+
+
+# override default values with input arguments
+while getopts ":hw:c:H:s:d:P:v" OPTION
+do
+  case $OPTION in
+	h) usage
+	   exit $STATE_UNKNOWN; # nothing checked, but feasible input
+	   ;;
+	w) WARN_PERCENT=$OPTARG
+	   ;;
+	c) CRIT_PERCENT=$OPTARG
+	   ;;
+	H) HOSTNAME=$OPTARG
+	   ;;
+	s) SUPP_IDX=$OPTARG
+	   ;;
+	d) DOM=$OPTARG
+	   ;;
+	P) SNMP_VERSION=$OPTARG
+	   ;;
+	v) VERBOSE=1;
+	   ;;
+	?) echo "unknown parameter" 
+	   usage
+	   exit $STATE_UNKNOWN;
+ 	   ;;
+  esac
+done
+
+if [ -z "$HOSTNAME" ]; then
+	echo "UNKNOWN - no printer given, use -H"
+	exit $STATE_UNKNOWN
+fi                                
+                                                                                                                               
+
+# get values from printer
+SUPP_STR=$(snmpwalk -v $SNMP_VERSION -Ov -Oq -c $DOM $HOSTNAME 1.3.6.1.2.1.43.11.1.1.6.1.$SUPP_IDX)
+if [ $? -ne 0 ]; then
+	echo "UNKNOWN - snmpwalk exited with exit code $? and $SUPP_STR"
+	exit $STATE_UNKNOWN
+fi
+SUPP_LEV=$(snmpwalk -v $SNMP_VERSION -Ov -Oq -c $DOM $HOSTNAME 1.3.6.1.2.1.43.11.1.1.9.1.$SUPP_IDX)
+if [ $? -ne 0 ]; then
+	echo "UNKNOWN - snmpwalk exited with exit code $? and $SUPP_LEV"
+	exit $STATE_UNKNOWN
+fi
+SUPP_MAX_LEV=$(snmpwalk -v $SNMP_VERSION -Ov -Oq -c $DOM $HOSTNAME 1.3.6.1.2.1.43.11.1.1.8.1.$SUPP_IDX)
+if [ $? -ne 0 ]; then
+	echo "UNKNOWN - snmpwalk exited with exit code $? and $SUPP_MAX_LEV"
+	exit $STATE_UNKNOWN
+fi
+
+# calculate values of of percentages
+WARN_LEV=$(($WARN_PERCENT*$SUPP_MAX_LEV/100))
+CRIT_LEV=$(($CRIT_PERCENT*$SUPP_MAX_LEV/100))
+
+if [ $VERBOSE -gt 0 ]; then
+	echo "Warn level is $WARN_LEV and crit level is $CRIT_LEV"
+fi
+
+
+# compare values to crit- and warn-levels
+if [ $SUPP_LEV -lt $CRIT_LEV ]; then
+	echo "CRITICAL - $SUPP_STR is low at $SUPP_LEV/$SUPP_MAX_LEV|level=$SUPP_LEV;$WARN_LEV;$CRIT_LEV;0;$SUPP_MAX_LEV"
+	RET_VAL=$STATE_CRITICAL
+elif [ $SUPP_LEV -lt $WARN_LEV ]; then
+	echo "WARN - $SUPP_STR is low at $SUPP_LEV/$SUPP_MAX_LEV|level=$SUPP_LEV;$WARN_LEV;$CRIT_LEV;0;$SUPP_MAX_LEV"
+	RET_VAL=$STATE_WARNING
+else
+	echo "OK - $SUPP_STR is at $SUPP_LEV/$SUPP_MAX_LEV|level=$SUPP_LEV;$WARN_LEV;$CRIT_LEV;0;$SUPP_MAX_LEV"
+	RET_VAL=$STATE_OK
+fi
+
+exit $RET_VAL
+
