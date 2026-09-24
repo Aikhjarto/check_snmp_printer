@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (C) 2017-2026 Thomas Wagner <wagner-thomas@gmx.at>
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 # string for help text
 usage()
@@ -11,9 +13,9 @@ OPTIONS:
  -w	warning level of supply status as integer number 0-100 (default 5)
  -c 	critical value of supply status as integer number 0-100 (default 0, empty)
  -H	hostname or address of the printer (required)
- -s	supply index (default 1)
+ -t	tray index (default 1)
  -d	snmp domain (default "public")
- -p	snmp protocol (default 1)
+ -P	snmp version (default 1)
  -v	verbose
 EOF
 }
@@ -67,7 +69,7 @@ done
 if [ -z "$HOSTNAME" ]; then
 	echo "UNKNOWN - no printer given, use -H"
 	exit $STATE_UNKNOWN
-fi                                
+fi
                                                                                                                                
 
 # get values from printer
@@ -86,11 +88,11 @@ fi
 if [ $LOAD_LEV -eq -3 ]; then
 	# printer can say that there is paper in the tray, but can not determine the amount
 	echo "OK - Paper is loaded in $TRAY_STR"
-	RET_VAL=$STATUS_OK
+	RET_VAL=$STATE_OK
 elif [ $LOAD_LEV -eq -2 ]; then
 	# printer has no option to read tray load
 	echo "UNKNOWN - Printer can not determine status of $TRAY_STR"
-	RET_VAL=$STATUS_UNKNOWN
+	RET_VAL=$STATE_UNKNOWN
 elif [ $LOAD_LEV -gt 0 ]; then
 	# printer can estimate the load value as a number
 	LOAD_MAX_LEV=$(snmpwalk -v $SNMP_VERSION -Ov -Oq -c $DOM $HOSTNAME 1.3.6.1.2.1.43.8.2.1.9.1.$TRAY_IDX)
@@ -106,11 +108,11 @@ elif [ $LOAD_LEV -gt 0 ]; then
                 echo "CRITICAL - $TRAY_STR is is low at $LOAD_LEV/$LOAD_MAX_LEV|level=$LOAD_LEV;$WARN_LEV;$CRIT_LEV;0;$LOAD_MAX_LEV"
                 RET_VAL=$STATE_CRITICAL
         elif [ $LOAD_LEV -lt $WARN_LEV ]; then
-                echo "WARN - $TRAY_STR is low at $LOAD_LEV/$LOAD_MAX_LEV|level=$LOAD_LEV;$WARN_LEV;$LOAD_LEV;0;$LOAD_MAX_LEV"
+                echo "WARN - $TRAY_STR is low at $LOAD_LEV/$LOAD_MAX_LEV|level=$LOAD_LEV;$WARN_LEV;$CRIT_LEV;0;$LOAD_MAX_LEV"
                 RET_VAL=$STATE_WARNING
         else
                 echo "OK - $TRAY_STR is at $LOAD_LEV/$LOAD_MAX_LEV|level=$LOAD_LEV;$WARN_LEV;$CRIT_LEV;0;$LOAD_MAX_LEV"
-                REV_VAL=$STATE_OK
+                RET_VAL=$STATE_OK
         fi
 else
 	echo "UNKNOWN - cannot interpret return value $LOAD_LEV of $TRAY_STR"

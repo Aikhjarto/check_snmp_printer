@@ -16,3 +16,7 @@ check_snmp_printer_tray   -H printer.example.com -t 1 -w 5 -c 0
 `-H` is required. `-w` and `-c` are levels in percent of the maximum, `-s`
 selects the supply and `-t` the tray index, `-d` sets the SNMP community
 (default `public`) and `-P` the SNMP version (default 1). `-h` shows the help.
+
+## License
+
+GPL-2.0-or-later, see [LICENSE](LICENSE).

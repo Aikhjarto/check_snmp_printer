@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright (C) 2017-2026 Thomas Wagner <wagner-thomas@gmx.at>
+# SPDX-License-Identifier: GPL-2.0-or-later
 
 # string for help text
 usage()
@@ -11,9 +13,9 @@ OPTIONS:
  -w	warning level of supply status as integer number 0-100 (default 3)
  -c 	critical value of supply status as integer number 0-100 (default 0, empty)
  -H	hostname or address of the printer (required)
- -t	tray index (default 1)
+ -s	supply index (default 1)
  -d	snmp domain (default "public")
- -p	snmp protocol (default 1)
+ -P	snmp version (default 1)
  -v	verbose
 EOF
 }
@@ -67,7 +69,7 @@ done
 if [ -z "$HOSTNAME" ]; then
 	echo "UNKNOWN - no printer given, use -H"
 	exit $STATE_UNKNOWN
-fi                                
+fi
                                                                                                                                
 
 # get values from printer
