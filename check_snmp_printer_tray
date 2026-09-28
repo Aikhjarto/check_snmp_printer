@@ -70,54 +70,86 @@ if [ -z "$HOSTNAME" ]; then
 	echo "UNKNOWN - no printer given, use -H"
 	exit $STATE_UNKNOWN
 fi
-                                                                                                                               
+
+for LEVEL in "$WARN_PERCENT" "$CRIT_PERCENT"; do
+	if ! [[ "$LEVEL" =~ ^[0-9]+$ ]] || [ "$LEVEL" -gt 100 ]; then
+		echo "UNKNOWN - -w and -c take an integer number 0-100, not '$LEVEL'"
+		exit $STATE_UNKNOWN
+	fi
+done
+
+
+# reads one value from the printer into VALUE, exits UNKNOWN if it cannot
+# snmp_value OID DESCRIPTION [integer]
+snmp_value()
+{
+	local RC
+	VALUE=$(snmpwalk -v "$SNMP_VERSION" -Ov -Oq -c "$DOM" "$HOSTNAME" "$1" 2>&1)
+	RC=$?
+	if [ $RC -ne 0 ]; then
+		echo "UNKNOWN - snmpwalk exited with exit code $RC: $(echo "$VALUE" | head -n 1)"
+		exit $STATE_UNKNOWN
+	fi
+	# a missing index gives no output with SNMP v1 and "No Such Instance ..." with v2c
+	if [ -z "$VALUE" ] || [[ "$VALUE" == No\ Such* ]]; then
+		echo "UNKNOWN - printer $HOSTNAME has no $2"
+		exit $STATE_UNKNOWN
+	fi
+	if [ "$3" = "integer" ] && ! [[ "$VALUE" =~ ^-?[0-9]+$ ]]; then
+		echo "UNKNOWN - unexpected value '$VALUE' for $2"
+		exit $STATE_UNKNOWN
+	fi
+}
+
 
 # get values from printer
-TRAY_STR=$(snmpwalk -v $SNMP_VERSION -Ov -Oq -c $DOM $HOSTNAME 1.3.6.1.2.1.43.8.2.1.13.1.$TRAY_IDX)
-if [ $? -ne 0 ]; then
-	echo "UNKNOWN - snmpwalk exited with exit code $? and $TRAY_STR"
-	exit $STATE_UNKNOWN
-fi
-LOAD_LEV=$(snmpwalk -v $SNMP_VERSION -Ov -Oq -c $DOM $HOSTNAME 1.3.6.1.2.1.43.8.2.1.10.1.$TRAY_IDX)
-if [ $? -ne 0 ]; then
-	echo "UNKNOWN - snmpwalk exited with exit code $? and $LOAD_LEV"
-	exit $STATE_UNKNOWN
-fi
+snmp_value 1.3.6.1.2.1.43.8.2.1.13.1.$TRAY_IDX "tray $TRAY_IDX"
+TRAY_STR=$VALUE
+snmp_value 1.3.6.1.2.1.43.8.2.1.10.1.$TRAY_IDX "level of tray $TRAY_IDX" integer
+LOAD_LEV=$VALUE
 
 # compare values to crit- and warn-levels
 if [ $LOAD_LEV -eq -3 ]; then
 	# printer can say that there is paper in the tray, but can not determine the amount
 	echo "OK - Paper is loaded in $TRAY_STR"
 	RET_VAL=$STATE_OK
-elif [ $LOAD_LEV -eq -2 ]; then
-	# printer has no option to read tray load
+elif [ $LOAD_LEV -lt 0 ]; then
+	# -2: printer has no option to read tray load, -1: other
 	echo "UNKNOWN - Printer can not determine status of $TRAY_STR"
 	RET_VAL=$STATE_UNKNOWN
-elif [ $LOAD_LEV -gt 0 ]; then
-	# printer can estimate the load value as a number
-	LOAD_MAX_LEV=$(snmpwalk -v $SNMP_VERSION -Ov -Oq -c $DOM $HOSTNAME 1.3.6.1.2.1.43.8.2.1.9.1.$TRAY_IDX)
-	if [ $? -ne 0 ]; then
-		echo "UNKNOWN - snmpwalk exited with exit code $? and $LOAD_MAX_LEV"
-		exit $STATE_UNKNOWN
-	fi
-	# calculate values of of percentages
-	WARN_LEV=$(($WARN_PERCENT*$LOAD_MAX_LEV/100))
-	CRIT_LEV=$(($CRIT_PERCENT*$LOAD_MAX_LEV/100))
-	
-        if [ $LOAD_LEV -lt $CRIT_LEV ]; then
-                echo "CRITICAL - $TRAY_STR is is low at $LOAD_LEV/$LOAD_MAX_LEV|level=$LOAD_LEV;$WARN_LEV;$CRIT_LEV;0;$LOAD_MAX_LEV"
-                RET_VAL=$STATE_CRITICAL
-        elif [ $LOAD_LEV -lt $WARN_LEV ]; then
-                echo "WARN - $TRAY_STR is low at $LOAD_LEV/$LOAD_MAX_LEV|level=$LOAD_LEV;$WARN_LEV;$CRIT_LEV;0;$LOAD_MAX_LEV"
-                RET_VAL=$STATE_WARNING
-        else
-                echo "OK - $TRAY_STR is at $LOAD_LEV/$LOAD_MAX_LEV|level=$LOAD_LEV;$WARN_LEV;$CRIT_LEV;0;$LOAD_MAX_LEV"
-                RET_VAL=$STATE_OK
-        fi
 else
-	echo "UNKNOWN - cannot interpret return value $LOAD_LEV of $TRAY_STR"
-	RET_VAL=$STATE_UNKNOWN
+	# printer can estimate the load value as a number
+	snmp_value 1.3.6.1.2.1.43.8.2.1.9.1.$TRAY_IDX "capacity of tray $TRAY_IDX" integer
+	LOAD_MAX_LEV=$VALUE
+	if [ $LOAD_MAX_LEV -le 0 ]; then
+		# the capacity is unknown, so only an empty tray can be told
+		WARN_LEV=""
+		CRIT_LEV=""
+		LOAD_MAX_LEV=""
+	else
+		# calculate values of of percentages
+		WARN_LEV=$(($WARN_PERCENT*$LOAD_MAX_LEV/100))
+		CRIT_LEV=$(($CRIT_PERCENT*$LOAD_MAX_LEV/100))
+	fi
+	PERFDATA="level=$LOAD_LEV;$WARN_LEV;$CRIT_LEV;0${LOAD_MAX_LEV:+;$LOAD_MAX_LEV}"
+
+	if [ $LOAD_LEV -eq 0 ]; then
+		# an empty tray cannot print, whatever the thresholds are
+		echo "CRITICAL - $TRAY_STR is empty|$PERFDATA"
+		RET_VAL=$STATE_CRITICAL
+	elif [ -z "$LOAD_MAX_LEV" ]; then
+		echo "OK - $TRAY_STR is at $LOAD_LEV, capacity unknown|$PERFDATA"
+		RET_VAL=$STATE_OK
+	elif [ $LOAD_LEV -lt $CRIT_LEV ]; then
+		echo "CRITICAL - $TRAY_STR is low at $LOAD_LEV/$LOAD_MAX_LEV|$PERFDATA"
+		RET_VAL=$STATE_CRITICAL
+	elif [ $LOAD_LEV -lt $WARN_LEV ]; then
+		echo "WARNING - $TRAY_STR is low at $LOAD_LEV/$LOAD_MAX_LEV|$PERFDATA"
+		RET_VAL=$STATE_WARNING
+	else
+		echo "OK - $TRAY_STR is at $LOAD_LEV/$LOAD_MAX_LEV|$PERFDATA"
+		RET_VAL=$STATE_OK
+	fi
 fi
 
 exit $RET_VAL
-

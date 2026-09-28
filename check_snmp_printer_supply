@@ -70,45 +70,96 @@ if [ -z "$HOSTNAME" ]; then
 	echo "UNKNOWN - no printer given, use -H"
 	exit $STATE_UNKNOWN
 fi
-                                                                                                                               
+
+for LEVEL in "$WARN_PERCENT" "$CRIT_PERCENT"; do
+	if ! [[ "$LEVEL" =~ ^[0-9]+$ ]] || [ "$LEVEL" -gt 100 ]; then
+		echo "UNKNOWN - -w and -c take an integer number 0-100, not '$LEVEL'"
+		exit $STATE_UNKNOWN
+	fi
+done
+
+
+# reads one value from the printer into VALUE, exits UNKNOWN if it cannot
+# snmp_value OID DESCRIPTION [integer]
+snmp_value()
+{
+	local RC
+	VALUE=$(snmpwalk -v "$SNMP_VERSION" -Ov -Oq -c "$DOM" "$HOSTNAME" "$1" 2>&1)
+	RC=$?
+	if [ $RC -ne 0 ]; then
+		echo "UNKNOWN - snmpwalk exited with exit code $RC: $(echo "$VALUE" | head -n 1)"
+		exit $STATE_UNKNOWN
+	fi
+	# a missing index gives no output with SNMP v1 and "No Such Instance ..." with v2c
+	if [ -z "$VALUE" ] || [[ "$VALUE" == No\ Such* ]]; then
+		echo "UNKNOWN - printer $HOSTNAME has no $2"
+		exit $STATE_UNKNOWN
+	fi
+	if [ "$3" = "integer" ] && ! [[ "$VALUE" =~ ^-?[0-9]+$ ]]; then
+		echo "UNKNOWN - unexpected value '$VALUE' for $2"
+		exit $STATE_UNKNOWN
+	fi
+}
+
 
 # get values from printer
-SUPP_STR=$(snmpwalk -v $SNMP_VERSION -Ov -Oq -c $DOM $HOSTNAME 1.3.6.1.2.1.43.11.1.1.6.1.$SUPP_IDX)
-if [ $? -ne 0 ]; then
-	echo "UNKNOWN - snmpwalk exited with exit code $? and $SUPP_STR"
-	exit $STATE_UNKNOWN
-fi
-SUPP_LEV=$(snmpwalk -v $SNMP_VERSION -Ov -Oq -c $DOM $HOSTNAME 1.3.6.1.2.1.43.11.1.1.9.1.$SUPP_IDX)
-if [ $? -ne 0 ]; then
-	echo "UNKNOWN - snmpwalk exited with exit code $? and $SUPP_LEV"
-	exit $STATE_UNKNOWN
-fi
-SUPP_MAX_LEV=$(snmpwalk -v $SNMP_VERSION -Ov -Oq -c $DOM $HOSTNAME 1.3.6.1.2.1.43.11.1.1.8.1.$SUPP_IDX)
-if [ $? -ne 0 ]; then
-	echo "UNKNOWN - snmpwalk exited with exit code $? and $SUPP_MAX_LEV"
-	exit $STATE_UNKNOWN
+snmp_value 1.3.6.1.2.1.43.11.1.1.6.1.$SUPP_IDX "supply $SUPP_IDX"
+SUPP_STR=$VALUE
+snmp_value 1.3.6.1.2.1.43.11.1.1.9.1.$SUPP_IDX "level of supply $SUPP_IDX" integer
+SUPP_LEV=$VALUE
+snmp_value 1.3.6.1.2.1.43.11.1.1.8.1.$SUPP_IDX "capacity of supply $SUPP_IDX" integer
+SUPP_MAX_LEV=$VALUE
+# 3: consumed like toner, the level is what is left; 4: filled like the waste
+# toner bottle, the level is the space left
+snmp_value 1.3.6.1.2.1.43.11.1.1.4.1.$SUPP_IDX "class of supply $SUPP_IDX" integer
+if [ "$VALUE" -eq 4 ]; then
+	EMPTY_STR="full"
+else
+	EMPTY_STR="empty"
 fi
 
-# calculate values of of percentages
-WARN_LEV=$(($WARN_PERCENT*$SUPP_MAX_LEV/100))
-CRIT_LEV=$(($CRIT_PERCENT*$SUPP_MAX_LEV/100))
+if [ $SUPP_MAX_LEV -le 0 ]; then
+	# the capacity is unknown, so only an exhausted supply can be told
+	WARN_LEV=""
+	CRIT_LEV=""
+	SUPP_MAX_LEV=""
+else
+	# calculate values of of percentages
+	WARN_LEV=$(($WARN_PERCENT*$SUPP_MAX_LEV/100))
+	CRIT_LEV=$(($CRIT_PERCENT*$SUPP_MAX_LEV/100))
+fi
 
 if [ $VERBOSE -gt 0 ]; then
 	echo "Warn level is $WARN_LEV and crit level is $CRIT_LEV"
 fi
 
+PERFDATA="level=$SUPP_LEV;$WARN_LEV;$CRIT_LEV;0${SUPP_MAX_LEV:+;$SUPP_MAX_LEV}"
 
 # compare values to crit- and warn-levels
-if [ $SUPP_LEV -lt $CRIT_LEV ]; then
-	echo "CRITICAL - $SUPP_STR is low at $SUPP_LEV/$SUPP_MAX_LEV|level=$SUPP_LEV;$WARN_LEV;$CRIT_LEV;0;$SUPP_MAX_LEV"
+if [ $SUPP_LEV -eq -3 ]; then
+	# printer can say that some is left, but can not determine the amount
+	echo "OK - $SUPP_STR is not $EMPTY_STR"
+	RET_VAL=$STATE_OK
+elif [ $SUPP_LEV -lt 0 ]; then
+	# -2: printer can not read the level, -1: other
+	echo "UNKNOWN - Printer can not determine the level of $SUPP_STR"
+	RET_VAL=$STATE_UNKNOWN
+elif [ $SUPP_LEV -eq 0 ]; then
+	# an exhausted supply stops the printer, whatever the thresholds are
+	echo "CRITICAL - $SUPP_STR is $EMPTY_STR|$PERFDATA"
+	RET_VAL=$STATE_CRITICAL
+elif [ -z "$SUPP_MAX_LEV" ]; then
+	echo "OK - $SUPP_STR is at $SUPP_LEV, capacity unknown|$PERFDATA"
+	RET_VAL=$STATE_OK
+elif [ $SUPP_LEV -lt $CRIT_LEV ]; then
+	echo "CRITICAL - $SUPP_STR is low at $SUPP_LEV/$SUPP_MAX_LEV|$PERFDATA"
 	RET_VAL=$STATE_CRITICAL
 elif [ $SUPP_LEV -lt $WARN_LEV ]; then
-	echo "WARN - $SUPP_STR is low at $SUPP_LEV/$SUPP_MAX_LEV|level=$SUPP_LEV;$WARN_LEV;$CRIT_LEV;0;$SUPP_MAX_LEV"
+	echo "WARNING - $SUPP_STR is low at $SUPP_LEV/$SUPP_MAX_LEV|$PERFDATA"
 	RET_VAL=$STATE_WARNING
 else
-	echo "OK - $SUPP_STR is at $SUPP_LEV/$SUPP_MAX_LEV|level=$SUPP_LEV;$WARN_LEV;$CRIT_LEV;0;$SUPP_MAX_LEV"
+	echo "OK - $SUPP_STR is at $SUPP_LEV/$SUPP_MAX_LEV|$PERFDATA"
 	RET_VAL=$STATE_OK
 fi
 
 exit $RET_VAL
-

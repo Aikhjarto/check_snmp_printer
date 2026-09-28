@@ -17,6 +17,13 @@ check_snmp_printer_tray   -H printer.example.com -t 1 -w 5 -c 0
 selects the supply and `-t` the tray index, `-d` sets the SNMP community
 (default `public`) and `-P` the SNMP version (default 1). `-h` shows the help.
 
+An empty tray, an empty supply or a full receptacle such as the waste toner
+bottle is CRITICAL, whatever the thresholds are. A printer that only knows
+that some paper or supply is left reports OK; one that cannot tell the level
+reports UNKNOWN. When the printer does not know the capacity, only an empty
+tray or supply can be detected. An unreachable printer, a missing tray or
+supply index and an invalid threshold are UNKNOWN.
+
 ## License
 
 GPL-2.0-or-later, see [LICENSE](LICENSE).
